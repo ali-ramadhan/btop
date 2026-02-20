@@ -122,6 +122,7 @@ namespace Cpu {
 	bool got_sensors{};
 	bool cpu_temp_only{};
 	bool supports_watts = true;
+	int rapl_package_count = 1;
 
 	//* Populate found_sensors map
 	bool get_sensors();
@@ -975,43 +976,76 @@ namespace Cpu {
 		return {percent, watts, seconds, status};
 	}
 
-	long long get_cpuConsumptionUJoules()
+	vector<string> get_rapl_package_paths()
+	{
+		vector<string> paths;
+		const fs::path powercap_dir = "/sys/class/powercap";
+		if (!fs::exists(powercap_dir)) return paths;
+
+		for (const auto& entry : fs::directory_iterator(powercap_dir)) {
+			const auto name = entry.path().filename().string();
+			// Match intel-rapl:N but not sub-domains like intel-rapl:N:M
+			if (name.starts_with("intel-rapl:") and name.find(':', 11) == string::npos) {
+				auto energy_path = entry.path() / "energy_uj";
+				if (fs::exists(energy_path)) {
+					paths.push_back(energy_path.string());
+				}
+			}
+		}
+		std::sort(paths.begin(), paths.end());
+		return paths;
+	}
+
+	long long read_energy_uj(const string& path)
 	{
 		long long consumption = -1;
-		const auto rapl_power_usage_path = "/sys/class/powercap/intel-rapl:0/energy_uj";
-		std::ifstream file(rapl_power_usage_path);
-		if(file.good())
-		{
+		std::ifstream file(path);
+		if (file.good()) {
 			file >> consumption;
 		}
 		return consumption;
 	}
 
-	float get_cpuConsumptionWatts()
+	vector<float> get_cpuConsumptionWatts()
 	{
-		static long long previous_usage = 0;
+		static vector<string> rapl_paths;
+		static vector<long long> previous_usages;
 		static long long previous_timestamp = 0;
+		static bool initialized = false;
 
-		if (previous_usage == 0)
+		if (not initialized)
 		{
-			previous_usage = get_cpuConsumptionUJoules();
+			initialized = true;
+			rapl_paths = get_rapl_package_paths();
+			if (rapl_paths.empty()) {
+				supports_watts = false;
+				return {};
+			}
+			previous_usages.resize(rapl_paths.size());
+			for (size_t i = 0; i < rapl_paths.size(); i++) {
+				previous_usages[i] = read_energy_uj(rapl_paths[i]);
+			}
 			previous_timestamp = get_monotonicTimeUSec();
-			supports_watts = (previous_usage > 0);
-			return 0;
+			supports_watts = std::any_of(previous_usages.begin(), previous_usages.end(),
+				[](long long v) { return v > 0; });
+			rapl_package_count = static_cast<int>(rapl_paths.size());
+			if (rapl_package_count > 1) redraw = true;
+			return vector<float>(rapl_paths.size(), 0.0f);
 		}
 
-		if (!supports_watts)
-		{
-			return -1;
-		}
+		if (not supports_watts) return {};
 
 		auto current_timestamp = get_monotonicTimeUSec();
-		auto current_usage = get_cpuConsumptionUJoules();
+		vector<float> watts(rapl_paths.size());
 
-		auto watts = (float)(current_usage - previous_usage) / (float)(current_timestamp - previous_timestamp);
-
+		for (size_t i = 0; i < rapl_paths.size(); i++) {
+			auto current_usage = read_energy_uj(rapl_paths[i]);
+			if (current_usage > 0 and previous_usages[i] > 0) {
+				watts[i] = (float)(current_usage - previous_usages[i]) / (float)(current_timestamp - previous_timestamp);
+			}
+			previous_usages[i] = current_usage;
+		}
 		previous_timestamp = current_timestamp;
-		previous_usage = current_usage;
 
 		return watts;
 	}
@@ -1185,7 +1219,7 @@ namespace Cpu {
 			current_bat = get_battery();
 
 		if (Config::getB("show_cpu_watts") and supports_watts)
-			current_cpu.usage_watts = get_cpuConsumptionWatts();
+			cpu.usage_watts = get_cpuConsumptionWatts();
 
 		cpu.active_cpus = std::make_optional(detect_active_cpus());
 

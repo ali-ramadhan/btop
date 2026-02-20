@@ -167,6 +167,7 @@ namespace Cpu {
 	vector<string> available_sensors = {"Auto"};
 	cpu_info current_cpu;
 	bool got_sensors = false, cpu_temp_only = false, supports_watts = false;
+	int rapl_package_count = 1;
 	int core_offset = 0;
 
 	//* Populate found_sensors map

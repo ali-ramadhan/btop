@@ -699,7 +699,7 @@ namespace Cpu {
 
 			int cpu_meter_width = b_width - (show_temps ? 23 - (b_column_size <= 1 and b_columns == 1 ? 6 : 0) : 11);
 			if (show_watts) {
-				cpu_meter_width -= 6;
+				cpu_meter_width -= 6 + max(0, (rapl_package_count - 1) * 8);
 			}
 
 			cpu_meter = Draw::Meter{cpu_meter_width, "cpu"};
@@ -850,12 +850,26 @@ namespace Cpu {
 			out += rjust(to_string(temp), 4) + Theme::c("main_fg") + unit;
 		}
 
-		if (show_watts) {
-			string cwatts = fmt::format(" {:>4.{}f}", cpu.usage_watts, cpu.usage_watts < 10.0f ? 2 : cpu.usage_watts < 100.0f ? 1 : 0);
-			string cwatts_post = "W";
+		if (show_watts and not cpu.usage_watts.empty()) {
+			float total_watts = 0.0f;
+			for (auto w : cpu.usage_watts) total_watts += w;
+			max_observed_pwr = max(max_observed_pwr, total_watts);
 
-			max_observed_pwr = max(max_observed_pwr, cpu.usage_watts);
-			out += Theme::g("cached").at(clamp(cpu.usage_watts / max_observed_pwr * 100.0f, 0.0f, 100.0f)) + cwatts + Theme::c("main_fg") + cwatts_post; 
+			string cwatts;
+			if (cpu.usage_watts.size() == 1) {
+				cwatts = fmt::format(" {:>4.{}f}", cpu.usage_watts[0],
+					cpu.usage_watts[0] < 10.0f ? 2 : cpu.usage_watts[0] < 100.0f ? 1 : 0);
+			} else {
+				cwatts = " ";
+				for (size_t i = 0; i < cpu.usage_watts.size(); i++) {
+					if (i > 0) cwatts += " + ";
+					float w = cpu.usage_watts[i];
+					cwatts += fmt::format("{:.{}f}", w, w < 10.0f ? 2 : w < 100.0f ? 1 : 0);
+				}
+			}
+
+			out += Theme::g("cached").at(clamp(total_watts / max_observed_pwr * 100.0f, 0.0f, 100.0f))
+				+ cwatts + Theme::c("main_fg") + "W";
 		}
 
 			out += Theme::c("div_line") + Symbols::v_line;
